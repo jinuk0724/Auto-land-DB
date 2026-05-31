@@ -42,9 +42,10 @@ const dealLabels: Record<DealType, string> = {
 };
 
 const defaultMonth = new Date().toISOString().slice(0, 7);
+const bundledApiKey = import.meta.env.VITE_PUBLIC_DATA_SERVICE_KEY ?? '';
 
 export default function App() {
-  const [apiKey, setApiKey] = useState(localStorage.getItem('publicDataApiKey') ?? '');
+  const [apiKey, setApiKey] = useState(localStorage.getItem('publicDataApiKey') ?? bundledApiKey);
   const [dealType, setDealType] = useState<DealType>('commercial');
   const [regionCode, setRegionCode] = useState('11680');
   const [contractMonth, setContractMonth] = useState(defaultMonth);

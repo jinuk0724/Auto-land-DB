@@ -77,3 +77,17 @@ D:\AI\manus\real-estate-insight\release\전국부동산인사이트-portable-fix
 ```
 
 기존에 열려 있는 빈 화면 앱은 먼저 닫은 뒤, 위 수정본 실행 파일을 다시 실행해 주세요.
+
+## API 키 기본값 설정
+
+앱은 프로젝트 루트의 `.env.local` 파일에 `VITE_PUBLIC_DATA_SERVICE_KEY` 값을 저장하면 실행 화면의 공공데이터 서비스키 입력란에 기본값으로 자동 반영합니다. 이 파일은 `.gitignore`에 의해 GitHub에 업로드되지 않으므로, 공개 저장소에는 실제 인증키가 포함되지 않습니다.
+
+```env
+VITE_PUBLIC_DATA_SERVICE_KEY=발급받은_공공데이터_서비스키
+```
+
+새 키를 반영한 이번 배포본은 다음 경로에 생성되었습니다.
+
+```text
+D:\AI\manus\real-estate-insight\release\전국부동산인사이트-portable-api\전국부동산인사이트.exe
+```
