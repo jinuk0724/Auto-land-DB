@@ -44,8 +44,29 @@ const dealLabels: Record<DealType, string> = {
 const defaultMonth = new Date().toISOString().slice(0, 7);
 const bundledApiKey = import.meta.env.VITE_PUBLIC_DATA_SERVICE_KEY ?? '';
 
+function normalizeApiKey(value?: string | null) {
+  return (value ?? '').trim();
+}
+
+function hasUsableApiKey(value?: string | null) {
+  return normalizeApiKey(value).length >= 10;
+}
+
+function getInitialApiKey() {
+  const storedApiKey = normalizeApiKey(localStorage.getItem('publicDataApiKey'));
+  if (hasUsableApiKey(storedApiKey)) return storedApiKey;
+  return normalizeApiKey(bundledApiKey);
+}
+
+function maskApiKey(value?: string | null) {
+  const key = normalizeApiKey(value);
+  if (!key) return '없음';
+  if (key.length <= 12) return `${key.slice(0, 3)}***`;
+  return `${key.slice(0, 4)}…${key.slice(-4)} · ${key.length}자`;
+}
+
 export default function App() {
-  const [apiKey, setApiKey] = useState(localStorage.getItem('publicDataApiKey') ?? bundledApiKey);
+  const [apiKey, setApiKey] = useState(getInitialApiKey);
   const [dealType, setDealType] = useState<DealType>('commercial');
   const [regionCode, setRegionCode] = useState('11680');
   const [contractMonth, setContractMonth] = useState(defaultMonth);
@@ -58,6 +79,16 @@ export default function App() {
   const layerRef = useRef<L.LayerGroup | null>(null);
 
   const regionName = useMemo(() => regions.find((region) => region.code === regionCode)?.name ?? '서울특별시 강남구', [regionCode]);
+  const normalizedApiKey = normalizeApiKey(apiKey);
+  const apiKeyReady = hasUsableApiKey(normalizedApiKey);
+  const hasBundledApiKey = hasUsableApiKey(bundledApiKey);
+  const apiKeySourceLabel = apiKeyReady
+    ? normalizedApiKey === normalizeApiKey(bundledApiKey) && hasBundledApiKey
+      ? '내장 서비스키가 자동 적용되었습니다.'
+      : '입력 또는 저장된 서비스키가 적용됩니다.'
+    : hasBundledApiKey
+      ? '저장된 키가 비어 있거나 너무 짧아 내장 서비스키를 사용할 수 있습니다. 앱을 다시 열거나 키를 직접 입력하세요.'
+      : '서비스키가 없으면 공공 API 대신 샘플 데이터가 표시됩니다.';
 
   const filteredRecords = useMemo(() => {
     const records = response?.records ?? [];
@@ -129,8 +160,14 @@ export default function App() {
   async function runSearch() {
     setLoading(true);
     setSelected(null);
-    localStorage.setItem('publicDataApiKey', apiKey);
-    const request: SearchRequest = { apiKey, dealType, regionCode, regionName, contractMonth, keyword };
+    const requestApiKey = normalizeApiKey(apiKey);
+    if (requestApiKey) {
+      localStorage.setItem('publicDataApiKey', requestApiKey);
+      if (requestApiKey !== apiKey) setApiKey(requestApiKey);
+    } else {
+      localStorage.removeItem('publicDataApiKey');
+    }
+    const request: SearchRequest = { apiKey: requestApiKey, dealType, regionCode, regionName, contractMonth, keyword };
     try {
       const result = await window.desktopApi.searchRealEstate(request);
       setResponse(result);
@@ -190,6 +227,10 @@ export default function App() {
           <h2><Search size={18} /> 통합 검색</h2>
           <label>공공데이터포털 서비스키</label>
           <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="서비스키를 입력하면 실제 API 조회" type="password" />
+          <div className={`key-status ${apiKeyReady ? 'ready' : 'missing'}`}>
+            <strong>{apiKeyReady ? `서비스키 적용됨 (${maskApiKey(apiKey)})` : '서비스키 미적용'}</strong>
+            <span>{apiKeySourceLabel}</span>
+          </div>
           <label>거래 유형</label>
           <div className="segmented">
             {(Object.keys(dealLabels) as DealType[]).map((type) => <button key={type} className={dealType === type ? 'active' : ''} onClick={() => setDealType(type)}>{dealLabels[type]}</button>)}

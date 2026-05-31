@@ -61,30 +61,33 @@ const refs = [
 ];
 
 export async function fetchRealEstateData(request: SearchRequest): Promise<SearchResponse> {
-  if (!request.apiKey || request.apiKey.trim().length < 10) {
+  const normalizedApiKey = normalizeServiceKey(request.apiKey);
+  const normalizedRequest = { ...request, apiKey: normalizedApiKey };
+
+  if (!normalizedApiKey || normalizedApiKey.length < 10) {
     return sampleResponse(request, '공공데이터포털 서비스키가 없어 샘플 데이터로 표시합니다.');
   }
 
   try {
     if (request.dealType === 'rent') {
-      const records = await fetchApartmentRent(request);
-      return withCommerceAndPopulation(request, records, 'api', '국토교통부 아파트 전월세 API 조회 결과입니다.');
+      const records = await fetchApartmentRent(normalizedRequest);
+      return withCommerceAndPopulation(normalizedRequest, records, 'api', '국토교통부 아파트 전월세 API 조회 결과입니다.');
     }
 
     if (request.dealType === 'commercial' || request.dealType === 'sale') {
-      const records = await fetchCommercialSale(request);
-      return withCommerceAndPopulation(request, records, 'api', '국토교통부 상업업무용 매매 API 조회 결과입니다.');
+      const records = await fetchCommercialSale(normalizedRequest);
+      return withCommerceAndPopulation(normalizedRequest, records, 'api', '국토교통부 상업업무용 매매 API 조회 결과입니다.');
     }
 
     if (request.dealType === 'auction') {
-      const records = await fetchOnbid(request);
-      return withCommerceAndPopulation(request, records, 'api', '온비드 부동산 공매 API 조회 결과입니다. 법원경매는 공식 API 확인이 어려워 바로가기로 제공합니다.');
+      const records = await fetchOnbid(normalizedRequest);
+      return withCommerceAndPopulation(normalizedRequest, records, 'api', '온비드 부동산 공매 API 조회 결과입니다. 법원경매는 공식 API 확인이 어려워 바로가기로 제공합니다.');
     }
 
-    return sampleResponse(request, '지원하지 않는 유형이므로 샘플 데이터로 표시합니다.');
+    return sampleResponse(normalizedRequest, '지원하지 않는 유형이므로 샘플 데이터로 표시합니다.');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return sampleResponse(request, `API 조회 중 오류가 발생하여 샘플 데이터로 전환했습니다: ${message}`);
+    return sampleResponse(normalizedRequest, `서비스키는 입력되었지만 API 조회에 실패해 샘플 데이터로 전환했습니다: ${message}`);
   }
 }
 
@@ -178,8 +181,39 @@ async function fetchOnbid(request: SearchRequest): Promise<PropertyRecord[]> {
 
 async function fetchText(url: URL): Promise<string> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.text();
+  const text = await res.text();
+  if (!res.ok) {
+    const detail = extractApiError(text);
+    throw new Error(detail ? `HTTP ${res.status} · ${detail}` : `HTTP ${res.status}`);
+  }
+  const detail = extractApiError(text);
+  if (detail) throw new Error(detail);
+  return text;
+}
+
+function normalizeServiceKey(value?: string | null) {
+  const trimmed = String(value ?? '').trim().replace(/^['"]|['"]$/g, '');
+  if (!trimmed) return '';
+  if (!trimmed.includes('%')) return trimmed;
+  try {
+    return decodeURIComponent(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
+function extractApiError(text: string) {
+  if (!text) return '';
+  const code = matchTag(text, 'resultCode') || matchTag(text, 'returnAuthMsg') || matchTag(text, 'returnReasonCode');
+  const message = matchTag(text, 'resultMsg') || matchTag(text, 'returnReasonCode') || matchTag(text, 'errMsg');
+  if (!code && !message) return '';
+  if (code === '00' || code === 'NORMAL_SERVICE') return '';
+  return [code, message].filter(Boolean).join(' / ');
+}
+
+function matchTag(text: string, tagName: string) {
+  const match = text.match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i'));
+  return match ? decodeXml(match[1].trim()) : '';
 }
 
 function parseItems(xml: string): Record<string, string>[] {
