@@ -1,5 +1,7 @@
 export type DealType = 'rent' | 'sale' | 'auction' | 'commercial';
 
+export type SearchErrorType = 'NO_KEY' | 'NO_PERMISSION' | 'NO_RESULT' | 'NETWORK' | 'PARSE' | 'UNSUPPORTED';
+
 export type SearchRequest = {
   apiKey?: string;
   dealType: DealType;
@@ -23,8 +25,8 @@ export type PropertyRecord = {
   area: number;
   floor?: string;
   contractDate?: string;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
   tags: string[];
 };
 
@@ -33,14 +35,15 @@ export type CommerceRecord = {
   name: string;
   industry: string;
   address: string;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
 };
 
 export type SearchResponse = {
   ok: boolean;
   message: string;
-  mode: 'api' | 'sample';
+  mode: 'api' | 'error';
+  errorType?: SearchErrorType;
   records: PropertyRecord[];
   commerce: CommerceRecord[];
   population: {
@@ -53,43 +56,72 @@ export type SearchResponse = {
   references: Array<{ title: string; url: string }>;
 };
 
+type ApiEndpoint = {
+  dealType: Extract<DealType, 'rent' | 'sale'>;
+  source: string;
+  url: string;
+};
+
+type PublicDataError = Error & { type?: SearchErrorType };
+
 const refs = [
   { title: '국토교통부_아파트 전월세 실거래가 자료', url: 'https://www.data.go.kr/data/15126474/openapi.do' },
-  { title: '국토교통부_상업업무용 부동산 매매 실거래가 자료', url: 'https://www.data.go.kr/data/15126463/openapi.do' },
-  { title: '소상공인시장진흥공단_상가(상권)정보_API', url: 'https://www.data.go.kr/data/15012005/openapi.do' },
-  { title: '온비드 부동산 물건목록 조회서비스', url: 'https://www.data.go.kr/en/data/15157207/openapi.do' },
+  { title: '국토교통부_아파트 매매 실거래가 자료', url: 'https://www.data.go.kr/data/15126469/openapi.do' },
+  { title: '행정표준코드관리시스템_법정동코드', url: 'https://www.code.go.kr/stdcode/regCodeL.do' },
 ];
 
+const endpoints: Record<'rent' | 'sale', ApiEndpoint> = {
+  rent: {
+    dealType: 'rent',
+    source: '국토교통부 아파트 전월세 실거래가',
+    url: 'https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent',
+  },
+  sale: {
+    dealType: 'sale',
+    source: '국토교통부 아파트 매매 실거래가',
+    url: 'https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade',
+  },
+};
+
 export async function fetchRealEstateData(request: SearchRequest): Promise<SearchResponse> {
-  if (!request.apiKey || request.apiKey.trim().length < 10) {
-    return sampleResponse(request, '공공데이터포털 서비스키가 없어 샘플 데이터로 표시합니다.');
+  const apiKey = request.apiKey?.trim() ?? '';
+
+  if (!apiKey || apiKey.length < 10) {
+    return errorResponse('NO_KEY', '공공데이터포털 서비스키가 없습니다. 서비스키를 입력한 뒤 다시 조회하세요. 샘플 데이터로 자동 대체하지 않습니다.');
+  }
+
+  if (request.dealType === 'commercial') {
+    return errorResponse('UNSUPPORTED', '비주거용·상가 매매는 2차 지원 항목입니다. 현재 MVP에서는 아파트 매매와 아파트 전월세만 조회합니다.');
+  }
+
+  if (request.dealType === 'auction') {
+    return errorResponse('UNSUPPORTED', '경매·공매는 2차 지원 항목입니다. 현재 MVP에서는 아파트 매매와 아파트 전월세만 조회합니다.');
   }
 
   try {
-    if (request.dealType === 'rent') {
-      const records = await fetchApartmentRent(request);
-      return withCommerceAndPopulation(request, records, 'api', '국토교통부 아파트 전월세 API 조회 결과입니다.');
+    const records = await fetchApartmentTransactions(request, endpoints[request.dealType]);
+
+    if (records.length === 0) {
+      return errorResponse('NO_RESULT', '공공데이터 API 조회는 정상 처리되었지만 조건에 맞는 거래가 없습니다. 지역, 계약월 또는 거래 유형을 변경해 보세요.');
     }
 
-    if (request.dealType === 'commercial' || request.dealType === 'sale') {
-      const records = await fetchCommercialSale(request);
-      return withCommerceAndPopulation(request, records, 'api', '국토교통부 상업업무용 매매 API 조회 결과입니다.');
-    }
-
-    if (request.dealType === 'auction') {
-      const records = await fetchOnbid(request);
-      return withCommerceAndPopulation(request, records, 'api', '온비드 부동산 공매 API 조회 결과입니다. 법원경매는 공식 API 확인이 어려워 바로가기로 제공합니다.');
-    }
-
-    return sampleResponse(request, '지원하지 않는 유형이므로 샘플 데이터로 표시합니다.');
+    return {
+      ok: true,
+      message: `${request.regionName} ${request.contractMonth} ${request.dealType === 'rent' ? '아파트 전월세' : '아파트 매매'} 실거래가 ${records.length}건을 조회했습니다. 좌표가 확인되지 않은 거래는 지도에 표시하지 않습니다.`,
+      mode: 'api',
+      records,
+      commerce: [],
+      population: emptyPopulation(),
+      references: refs,
+    };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return sampleResponse(request, `API 조회 중 오류가 발생하여 샘플 데이터로 전환했습니다: ${message}`);
+    const classified = classifyError(error);
+    return errorResponse(classified.type, classified.message);
   }
 }
 
-async function fetchApartmentRent(request: SearchRequest): Promise<PropertyRecord[]> {
-  const url = new URL('https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent');
+async function fetchApartmentTransactions(request: SearchRequest, endpoint: ApiEndpoint): Promise<PropertyRecord[]> {
+  const url = new URL(endpoint.url);
   url.searchParams.set('serviceKey', request.apiKey ?? '');
   url.searchParams.set('LAWD_CD', request.regionCode);
   url.searchParams.set('DEAL_YMD', request.contractMonth.replace('-', ''));
@@ -97,220 +129,195 @@ async function fetchApartmentRent(request: SearchRequest): Promise<PropertyRecor
   url.searchParams.set('pageNo', '1');
 
   const xml = await fetchText(url);
+  assertPublicDataSuccess(xml);
   const items = parseItems(xml);
-  return items.slice(0, 50).map((item, index) => ({
-    id: `rent-${index}-${item['aptNm'] ?? item['단지명'] ?? index}`,
-    source: '국토교통부 아파트 전월세',
-    dealType: 'rent',
-    title: item['aptNm'] ?? item['단지명'] ?? '아파트 전월세',
-    address: `${request.regionName} ${item['umdNm'] ?? item['법정동'] ?? ''}`.trim(),
-    category: '주거용 아파트',
-    priceLabel: `보증금 ${formatMoney(Number(cleanNumber(item['deposit'] ?? item['보증금액'] ?? 0)))} / 월세 ${formatMoney(Number(cleanNumber(item['monthlyRent'] ?? item['월세금액'] ?? 0)))}`,
-    price: Number(cleanNumber(item['deposit'] ?? item['보증금액'] ?? 0)),
-    area: Number(cleanNumber(item['excluUseAr'] ?? item['전용면적'] ?? 0)),
-    floor: item['floor'] ?? item['층'],
-    contractDate: `${item['dealYear'] ?? ''}.${item['dealMonth'] ?? ''}.${item['dealDay'] ?? ''}`,
-    lat: jitterLat(request.regionCode, index),
-    lng: jitterLng(request.regionCode, index),
-    tags: ['전월세', '공공데이터', '실거래'],
-  }));
-}
 
-async function fetchCommercialSale(request: SearchRequest): Promise<PropertyRecord[]> {
-  const url = new URL('https://apis.data.go.kr/1613000/RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade');
-  url.searchParams.set('serviceKey', request.apiKey ?? '');
-  url.searchParams.set('LAWD_CD', request.regionCode);
-  url.searchParams.set('DEAL_YMD', request.contractMonth.replace('-', ''));
-  url.searchParams.set('numOfRows', '100');
-  url.searchParams.set('pageNo', '1');
-
-  const xml = await fetchText(url);
-  const items = parseItems(xml);
-  return items.slice(0, 50).map((item, index) => ({
-    id: `commercial-${index}-${item['buildingName'] ?? index}`,
-    source: '국토교통부 상업업무용 매매',
-    dealType: request.dealType,
-    title: item['buildingName'] ?? item['건물명'] ?? '상업업무용 부동산',
-    address: `${request.regionName} ${item['umdNm'] ?? item['법정동'] ?? ''}`.trim(),
-    category: item['buildingUse'] ?? item['건물주용도'] ?? '상업업무용',
-    priceLabel: `거래금액 ${formatMoney(Number(cleanNumber(item['dealAmount'] ?? item['거래금액'] ?? 0)))}`,
-    price: Number(cleanNumber(item['dealAmount'] ?? item['거래금액'] ?? 0)),
-    area: Number(cleanNumber(item['excluUseAr'] ?? item['건물면적'] ?? 0)),
-    floor: item['floor'] ?? item['층'],
-    contractDate: `${item['dealYear'] ?? ''}.${item['dealMonth'] ?? ''}.${item['dealDay'] ?? ''}`,
-    lat: jitterLat(request.regionCode, index),
-    lng: jitterLng(request.regionCode, index),
-    tags: ['상업업무용', '매매', '실거래'],
-  }));
-}
-
-async function fetchOnbid(request: SearchRequest): Promise<PropertyRecord[]> {
-  const url = new URL('http://apis.data.go.kr/B010003/OnbidRlstListSrvc2/getRlstCltrList2');
-  url.searchParams.set('serviceKey', request.apiKey ?? '');
-  url.searchParams.set('pageNo', '1');
-  url.searchParams.set('numOfRows', '50');
-  url.searchParams.set('resultType', 'json');
-  url.searchParams.set('prptDivCd', '0007,0005');
-  url.searchParams.set('pvctTrgtYn', 'N');
-  url.searchParams.set('lctnSdnm', request.regionName.split(' ')[0] ?? '서울특별시');
-
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`온비드 API HTTP ${res.status}`);
-  const data = await res.json() as any;
-  const items = data?.response?.body?.items?.item ?? data?.items ?? [];
-  const arr = Array.isArray(items) ? items : [items];
-  return arr.filter(Boolean).slice(0, 50).map((item: any, index: number) => ({
-    id: `auction-${index}-${item.cltrMngNo ?? index}`,
-    source: '온비드 부동산 공매',
-    dealType: 'auction',
-    title: item.onbidCltrNm ?? item.cltrNm ?? '온비드 부동산 물건',
-    address: item.lctnFullAddr ?? `${item.lctnSdnm ?? ''} ${item.lctnSggnm ?? ''} ${item.lctnEmdNm ?? ''}`.trim(),
-    category: item.cltrUsgSclsCtgrNm ?? item.cltrUsgMclsCtgrNm ?? '부동산 공매',
-    priceLabel: `최저입찰가 ${formatMoney(Number(item.lowstBidPrc ?? 0))}`,
-    price: Number(item.lowstBidPrc ?? 0),
-    area: Number(item.landSqms ?? item.bldSqms ?? 0),
-    contractDate: item.bidPrdYmdEnd ?? undefined,
-    lat: jitterLat(request.regionCode, index),
-    lng: jitterLng(request.regionCode, index),
-    tags: ['공매', '온비드', item.bidStatNm ?? '입찰'],
-  }));
+  return items.slice(0, 100).map((item, index) => toApartmentRecord(item, index, request, endpoint));
 }
 
 async function fetchText(url: URL): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.text();
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw publicDataError('NETWORK', `네트워크 오류로 공공데이터 API에 접속하지 못했습니다: ${stringifyError(error)}`);
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw publicDataError('NO_PERMISSION', `공공데이터 API 권한 오류가 발생했습니다. HTTP ${response.status}`);
+    }
+    throw publicDataError('NETWORK', `공공데이터 API HTTP 오류가 발생했습니다. HTTP ${response.status}`);
+  }
+
+  return response.text();
+}
+
+function assertPublicDataSuccess(xml: string) {
+  if (!xml || !xml.trim()) {
+    throw publicDataError('PARSE', '공공데이터 API 응답이 비어 있어 파싱할 수 없습니다.');
+  }
+
+  const resultCode = extractTag(xml, 'resultCode') ?? extractTag(xml, 'returnAuthMsg') ?? extractTag(xml, 'returnReasonCode');
+  const resultMessage = extractTag(xml, 'resultMsg') ?? extractTag(xml, 'returnReasonMsg') ?? extractTag(xml, 'errMsg') ?? '';
+
+  if (!resultCode) return;
+
+  const normalizedCode = resultCode.trim().toUpperCase();
+  if (normalizedCode === '00' || normalizedCode === '000' || normalizedCode === 'NORMAL SERVICE.' || normalizedCode === 'NORMAL_CODE') return;
+
+  const message = resultMessage || `공공데이터 API 오류 코드 ${resultCode}`;
+  if (normalizedCode.includes('SERVICE_KEY') || normalizedCode.includes('INVALID') || message.includes('SERVICE KEY') || message.includes('서비스키') || message.includes('인증키')) {
+    throw publicDataError('NO_PERMISSION', `서비스키 또는 활용신청 권한을 확인하세요. ${message}`);
+  }
+
+  throw publicDataError('PARSE', `공공데이터 API가 정상 코드가 아닌 응답을 반환했습니다. ${message}`);
 }
 
 function parseItems(xml: string): Record<string, string>[] {
-  const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-  return itemMatches.map((match) => {
-    const content = match[1];
-    const fields: Record<string, string> = {};
-    for (const field of content.matchAll(/<([^/][^>]*)>([\s\S]*?)<\/\1>/g)) {
-      fields[field[1]] = decodeXml(field[2].trim());
-    }
-    return fields;
-  });
+  try {
+    const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+    return itemMatches.map((match) => {
+      const content = match[1];
+      const fields: Record<string, string> = {};
+      for (const field of content.matchAll(/<([^/][^>\s]*)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g)) {
+        fields[field[1]] = decodeXml(field[2].trim());
+      }
+      return fields;
+    });
+  } catch (error) {
+    throw publicDataError('PARSE', `공공데이터 API 응답 파싱 중 오류가 발생했습니다: ${stringifyError(error)}`);
+  }
+}
+
+function toApartmentRecord(item: Record<string, string>, index: number, request: SearchRequest, endpoint: ApiEndpoint): PropertyRecord {
+  const apartmentName = firstValue(item, ['aptNm', '아파트', '단지명']) || '아파트';
+  const legalDong = firstValue(item, ['umdNm', '법정동']) || '';
+  const jibun = firstValue(item, ['jibun', '지번']) || '';
+  const address = [request.regionName, legalDong, jibun].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  const area = toNumber(firstValue(item, ['excluUseAr', '전용면적', '전용면적(㎡)']));
+  const dealYear = firstValue(item, ['dealYear', '년']) || '';
+  const dealMonth = firstValue(item, ['dealMonth', '월']) || '';
+  const dealDay = firstValue(item, ['dealDay', '일']) || '';
+  const contractDate = formatContractDate(dealYear, dealMonth, dealDay, request.contractMonth);
+
+  if (endpoint.dealType === 'rent') {
+    const deposit = toNumber(firstValue(item, ['deposit', '보증금액']));
+    const monthlyRent = toNumber(firstValue(item, ['monthlyRent', '월세금액']));
+    return {
+      id: stableId(['rent', request.regionCode, contractDate, apartmentName, legalDong, String(index)]),
+      source: endpoint.source,
+      dealType: 'rent',
+      title: apartmentName,
+      address,
+      category: '아파트 전월세',
+      priceLabel: `보증금 ${formatMoney(deposit)} / 월세 ${formatMoney(monthlyRent)}`,
+      price: deposit,
+      area,
+      floor: firstValue(item, ['floor', '층']) || undefined,
+      contractDate,
+      tags: ['전월세', '공공데이터', '실거래', '좌표 미검증'],
+    };
+  }
+
+  const dealAmount = toNumber(firstValue(item, ['dealAmount', '거래금액']));
+  return {
+    id: stableId(['sale', request.regionCode, contractDate, apartmentName, legalDong, String(index)]),
+    source: endpoint.source,
+    dealType: 'sale',
+    title: apartmentName,
+    address,
+    category: '아파트 매매',
+    priceLabel: `거래금액 ${formatMoney(dealAmount)}`,
+    price: dealAmount,
+    area,
+    floor: firstValue(item, ['floor', '층']) || undefined,
+    contractDate,
+    tags: ['매매', '공공데이터', '실거래', '좌표 미검증'],
+  };
+}
+
+function errorResponse(errorType: SearchErrorType, message: string): SearchResponse {
+  return {
+    ok: false,
+    message,
+    mode: 'error',
+    errorType,
+    records: [],
+    commerce: [],
+    population: emptyPopulation(),
+    references: refs,
+  };
+}
+
+function emptyPopulation() {
+  return {
+    floatingIndex: 0,
+    weekday: 0,
+    weekend: 0,
+    age20to39: 0,
+    age40to59: 0,
+  };
+}
+
+function classifyError(error: unknown): { type: SearchErrorType; message: string } {
+  const typed = error as PublicDataError;
+  if (typed?.type) return { type: typed.type, message: typed.message };
+  return { type: 'NETWORK', message: `알 수 없는 조회 오류가 발생했습니다: ${stringifyError(error)}` };
+}
+
+function publicDataError(type: SearchErrorType, message: string): PublicDataError {
+  const error = new Error(message) as PublicDataError;
+  error.type = type;
+  return error;
+}
+
+function extractTag(xml: string, tagName: string) {
+  const match = xml.match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i'));
+  return match ? decodeXml(match[1].trim()) : undefined;
+}
+
+function firstValue(item: Record<string, string>, keys: string[]) {
+  for (const key of keys) {
+    const value = item[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return undefined;
+}
+
+function toNumber(value: unknown) {
+  const numeric = Number(String(value ?? '0').replace(/,/g, '').replace(/\s/g, ''));
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 function decodeXml(value: string) {
-  return value.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"');
-}
-
-function cleanNumber(value: unknown) {
-  return String(value ?? '0').replace(/,/g, '').replace(/\s/g, '') || '0';
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 }
 
 function formatMoney(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '정보 없음';
-  if (value >= 10000) return `${Math.round(value / 10000).toLocaleString()}억 ${Math.round(value % 10000).toLocaleString()}만 원`;
-  return `${value.toLocaleString()}만 원`;
+  if (value >= 10000) {
+    const eok = Math.floor(value / 10000);
+    const man = Math.round(value % 10000);
+    return man > 0 ? `${eok.toLocaleString()}억 ${man.toLocaleString()}만 원` : `${eok.toLocaleString()}억 원`;
+  }
+  return `${Math.round(value).toLocaleString()}만 원`;
 }
 
-function withCommerceAndPopulation(request: SearchRequest, records: PropertyRecord[], mode: 'api' | 'sample', message: string): SearchResponse {
-  if (records.length === 0) return sampleResponse(request, 'API에서 결과가 없어 샘플 데이터로 표시합니다. 검색 조건 또는 API 키를 확인하세요.');
-  return {
-    ok: true,
-    message,
-    mode,
-    records,
-    commerce: sampleCommerce(request),
-    population: samplePopulation(request),
-    references: refs,
-  };
+function formatContractDate(year: string, month: string, day: string, fallbackMonth: string) {
+  if (!year || !month || !day) return fallbackMonth;
+  return `${year}.${month.padStart(2, '0')}.${day.padStart(2, '0')}`;
 }
 
-function sampleResponse(request: SearchRequest, message: string): SearchResponse {
-  return {
-    ok: true,
-    message,
-    mode: 'sample',
-    records: sampleRecords(request),
-    commerce: sampleCommerce(request),
-    population: samplePopulation(request),
-    references: refs,
-  };
+function stableId(parts: string[]) {
+  return parts.join('-').replace(/\s+/g, '_').replace(/[^\w가-힣.-]/g, '');
 }
 
-function sampleRecords(request: SearchRequest): PropertyRecord[] {
-  const baseLat = baseCoord(request.regionCode).lat;
-  const baseLng = baseCoord(request.regionCode).lng;
-  const names = request.dealType === 'auction'
-    ? ['역세권 근린생활시설 공매', '복합상가 지분 공매', '도심 업무시설 경매', '저층 상가주택 경매']
-    : request.dealType === 'rent'
-      ? ['래미안 시티뷰 전세', '중심상권 오피스텔 월세', '대단지 아파트 반전세', '역세권 투룸 월세']
-      : ['대로변 상업업무시설', '신축 근린생활시설', '업무지구 오피스', '수익형 상가건물'];
-
-  return names.map((name, index) => ({
-    id: `sample-${request.dealType}-${index}`,
-    source: '샘플 데이터',
-    dealType: request.dealType,
-    title: name,
-    address: `${request.regionName} 샘플동 ${12 + index}-${index}`,
-    category: request.dealType === 'rent' ? '주거용' : request.dealType === 'auction' ? '경매/공매' : '비주거용',
-    priceLabel: request.dealType === 'rent' ? `보증금 ${(3 + index).toLocaleString()}억 / 월세 ${80 + index * 35}만 원` : `예상가 ${(8 + index * 3).toLocaleString()}억 원`,
-    price: request.dealType === 'rent' ? (30000 + index * 5000) : (80000 + index * 30000),
-    area: 54 + index * 18,
-    floor: `${index + 2}층`,
-    contractDate: request.contractMonth,
-    lat: baseLat + (index - 1.5) * 0.006,
-    lng: baseLng + (index - 1.5) * 0.008,
-    tags: request.dealType === 'auction' ? ['경매', '권리분석 필요', '현장조사'] : ['실거래', '상권연계', '지도분석'],
-  }));
-}
-
-function sampleCommerce(request: SearchRequest): CommerceRecord[] {
-  const industries = ['음식점', '카페', '편의점', '학원', '병원', '미용', '부동산중개', '생활서비스', '소매점'];
-  const base = baseCoord(request.regionCode);
-  return industries.map((industry, index) => ({
-    id: `commerce-${index}`,
-    name: `${industry} 샘플 ${index + 1}`,
-    industry,
-    address: `${request.regionName} 상권로 ${20 + index}`,
-    lat: base.lat + Math.sin(index) * 0.012,
-    lng: base.lng + Math.cos(index) * 0.012,
-  }));
-}
-
-function samplePopulation(request: SearchRequest) {
-  const seed = Number(request.regionCode.slice(0, 2)) || 11;
-  return {
-    floatingIndex: 65 + (seed % 25),
-    weekday: 7200 + seed * 110,
-    weekend: 5600 + seed * 95,
-    age20to39: 38 + (seed % 14),
-    age40to59: 31 + (seed % 10),
-  };
-}
-
-function baseCoord(regionCode: string) {
-  const region = regionCode.slice(0, 2);
-  const map: Record<string, { lat: number; lng: number }> = {
-    '11': { lat: 37.5665, lng: 126.9780 },
-    '26': { lat: 35.1796, lng: 129.0756 },
-    '27': { lat: 35.8714, lng: 128.6014 },
-    '28': { lat: 37.4563, lng: 126.7052 },
-    '29': { lat: 35.1595, lng: 126.8526 },
-    '30': { lat: 36.3504, lng: 127.3845 },
-    '31': { lat: 35.5384, lng: 129.3114 },
-    '41': { lat: 37.4138, lng: 127.5183 },
-    '43': { lat: 36.6357, lng: 127.4917 },
-    '44': { lat: 36.6588, lng: 126.6728 },
-    '46': { lat: 34.8161, lng: 126.4629 },
-    '47': { lat: 36.5760, lng: 128.5056 },
-    '48': { lat: 35.2383, lng: 128.6924 },
-    '50': { lat: 33.4996, lng: 126.5312 },
-    '51': { lat: 37.8228, lng: 128.1555 },
-    '52': { lat: 35.7175, lng: 127.1530 },
-  };
-  return map[region] ?? map['11'];
-}
-
-function jitterLat(regionCode: string, index: number) {
-  return baseCoord(regionCode).lat + ((index % 9) - 4) * 0.004;
-}
-
-function jitterLng(regionCode: string, index: number) {
-  return baseCoord(regionCode).lng + ((index % 7) - 3) * 0.005;
+function stringifyError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }

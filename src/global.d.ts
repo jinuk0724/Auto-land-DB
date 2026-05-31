@@ -11,6 +11,8 @@ declare global {
 
 export type DealType = 'rent' | 'sale' | 'auction' | 'commercial';
 
+export type SearchErrorType = 'NO_KEY' | 'NO_PERMISSION' | 'NO_RESULT' | 'NETWORK' | 'PARSE' | 'UNSUPPORTED';
+
 export type SearchRequest = {
   apiKey?: string;
   dealType: DealType;
@@ -34,8 +36,8 @@ export type PropertyRecord = {
   area: number;
   floor?: string;
   contractDate?: string;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
   tags: string[];
 };
 
@@ -44,14 +46,15 @@ export type CommerceRecord = {
   name: string;
   industry: string;
   address: string;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
 };
 
 export type SearchResponse = {
   ok: boolean;
   message: string;
-  mode: 'api' | 'sample';
+  mode: 'api' | 'error';
+  errorType?: SearchErrorType;
   records: PropertyRecord[];
   commerce: CommerceRecord[];
   population: {

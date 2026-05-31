@@ -29,6 +29,7 @@ input:focus, select:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .segmented button, .ghost, .primary { border: 0; border-radius: 12px; padding: 10px 12px; color: #e2e8f0; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .segmented button { background: rgba(30, 41, 59, 0.9); color: #94a3b8; }
+.segmented button:disabled { opacity: 0.42; cursor: not-allowed; text-decoration: line-through; }
 .segmented button.active { background: linear-gradient(135deg, #0ea5e9, #22c55e); color: white; font-weight: 700; }
 .primary { background: linear-gradient(135deg, #2563eb, #0891b2); font-weight: 800; margin-top: 8px; min-height: 44px; }
 .primary:disabled { opacity: 0.58; cursor: not-allowed; }

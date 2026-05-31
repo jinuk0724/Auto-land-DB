@@ -14,25 +14,9 @@ import {
 } from 'chart.js';
 import { Building2, Download, ExternalLink, KeyRound, MapPin, Search, Store, TrendingUp, UsersRound } from 'lucide-react';
 import type { DealType, PropertyRecord, SearchRequest, SearchResponse } from './global';
+import { allDistricts, provinces } from './data/regions';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Tooltip, Legend);
-
-const regions = [
-  { code: '11680', name: '서울특별시 강남구' },
-  { code: '11110', name: '서울특별시 종로구' },
-  { code: '26440', name: '부산광역시 강서구' },
-  { code: '27140', name: '대구광역시 동구' },
-  { code: '28185', name: '인천광역시 연수구' },
-  { code: '29155', name: '광주광역시 남구' },
-  { code: '30170', name: '대전광역시 서구' },
-  { code: '41135', name: '경기도 성남시 분당구' },
-  { code: '41465', name: '경기도 용인시 수지구' },
-  { code: '43113', name: '충청북도 청주시 흥덕구' },
-  { code: '44133', name: '충청남도 천안시 서북구' },
-  { code: '47113', name: '경상북도 포항시 북구' },
-  { code: '48125', name: '경상남도 창원시 마산합포구' },
-  { code: '50110', name: '제주특별자치도 제주시' },
-];
 
 const dealLabels: Record<DealType, string> = {
   rent: '전세·월세',
@@ -43,11 +27,15 @@ const dealLabels: Record<DealType, string> = {
 
 const defaultMonth = new Date().toISOString().slice(0, 7);
 const bundledApiKey = import.meta.env.VITE_PUBLIC_DATA_SERVICE_KEY ?? '';
+const defaultProvinceCode = '11';
+const defaultRegionCode = '11680';
+const supportedDealTypes: DealType[] = ['rent', 'sale'];
 
 export default function App() {
   const [apiKey, setApiKey] = useState(localStorage.getItem('publicDataApiKey') ?? bundledApiKey);
-  const [dealType, setDealType] = useState<DealType>('commercial');
-  const [regionCode, setRegionCode] = useState('11680');
+  const [dealType, setDealType] = useState<DealType>('rent');
+  const [provinceCode, setProvinceCode] = useState(defaultProvinceCode);
+  const [regionCode, setRegionCode] = useState(defaultRegionCode);
   const [contractMonth, setContractMonth] = useState(defaultMonth);
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -57,7 +45,8 @@ export default function App() {
   const leafletRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
 
-  const regionName = useMemo(() => regions.find((region) => region.code === regionCode)?.name ?? '서울특별시 강남구', [regionCode]);
+  const districtOptions = useMemo(() => provinces.find((province) => province.code === provinceCode)?.districts ?? provinces[0]?.districts ?? [], [provinceCode]);
+  const regionName = useMemo(() => allDistricts.find((region) => region.code === regionCode)?.fullName ?? '서울특별시 강남구', [regionCode]);
 
   const filteredRecords = useMemo(() => {
     const records = response?.records ?? [];
@@ -65,6 +54,8 @@ export default function App() {
     if (!lowered) return records;
     return records.filter((record) => `${record.title} ${record.address} ${record.category}`.toLowerCase().includes(lowered));
   }, [keyword, response]);
+
+  const recordsOnMap = useMemo(() => filteredRecords.filter((record) => typeof record.lat === 'number' && typeof record.lng === 'number'), [filteredRecords]);
 
   const summary = useMemo(() => {
     const records = filteredRecords;
@@ -99,10 +90,11 @@ export default function App() {
     layer.clearLayers();
     const bounds: L.LatLngTuple[] = [];
 
-    filteredRecords.forEach((record) => {
+    recordsOnMap.forEach((record) => {
+      if (typeof record.lat !== 'number' || typeof record.lng !== 'number') return;
       const marker = L.circleMarker([record.lat, record.lng], {
         radius: 9,
-        fillColor: record.dealType === 'auction' ? '#f97316' : record.dealType === 'rent' ? '#06b6d4' : '#22c55e',
+        fillColor: record.dealType === 'rent' ? '#06b6d4' : '#22c55e',
         color: '#ffffff',
         weight: 2,
         fillOpacity: 0.92,
@@ -113,6 +105,7 @@ export default function App() {
     });
 
     response.commerce.forEach((shop) => {
+      if (typeof shop.lat !== 'number' || typeof shop.lng !== 'number') return;
       L.circleMarker([shop.lat, shop.lng], {
         radius: 5,
         fillColor: '#8b5cf6',
@@ -124,7 +117,7 @@ export default function App() {
     });
 
     if (bounds.length) map.fitBounds(bounds, { padding: [36, 36], maxZoom: 14 });
-  }, [filteredRecords, response]);
+  }, [recordsOnMap, response]);
 
   async function runSearch() {
     setLoading(true);
@@ -192,10 +185,23 @@ export default function App() {
           <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="서비스키를 입력하면 실제 API 조회" type="password" />
           <label>거래 유형</label>
           <div className="segmented">
-            {(Object.keys(dealLabels) as DealType[]).map((type) => <button key={type} className={dealType === type ? 'active' : ''} onClick={() => setDealType(type)}>{dealLabels[type]}</button>)}
+            {(Object.keys(dealLabels) as DealType[]).map((type) => (
+              <button key={type} className={dealType === type ? 'active' : ''} onClick={() => setDealType(type)} disabled={!supportedDealTypes.includes(type)} title={!supportedDealTypes.includes(type) ? '2차 지원 예정 기능입니다.' : undefined}>
+                {dealLabels[type]}{!supportedDealTypes.includes(type) ? ' · 예정' : ''}
+              </button>
+            ))}
           </div>
-          <label>지역</label>
-          <select value={regionCode} onChange={(event) => setRegionCode(event.target.value)}>{regions.map((region) => <option key={region.code} value={region.code}>{region.name}</option>)}</select>
+          <label>시·도</label>
+          <select value={provinceCode} onChange={(event) => {
+            const nextProvinceCode = event.target.value;
+            const nextDistricts = provinces.find((province) => province.code === nextProvinceCode)?.districts ?? [];
+            setProvinceCode(nextProvinceCode);
+            setRegionCode(nextDistricts[0]?.code ?? defaultRegionCode);
+          }}>
+            {provinces.map((province) => <option key={province.code} value={province.code}>{province.name}</option>)}
+          </select>
+          <label>시·군·구</label>
+          <select value={regionCode} onChange={(event) => setRegionCode(event.target.value)}>{districtOptions.map((district) => <option key={district.code} value={district.code}>{district.name}</option>)}</select>
           <label>계약·입찰 기준월</label>
           <input value={contractMonth} onChange={(event) => setContractMonth(event.target.value)} type="month" />
           <label>결과 내 키워드 필터</label>
@@ -203,14 +209,14 @@ export default function App() {
           <button className="primary" onClick={runSearch} disabled={loading}>{loading ? '조회 중...' : '검색 및 분석 실행'}</button>
 
           <div className="notice">
-            <strong>{response?.mode === 'api' ? '실제 API 모드' : '샘플 데이터 모드'}</strong>
-            <span>{response?.message ?? '앱을 시작하면 샘플 데이터가 자동 표시됩니다.'}</span>
+            <strong>{response?.ok ? '실제 API 조회 완료' : '실제 API 조회 대기'}</strong>
+            <span>{response?.message ?? '공공데이터포털 서비스키를 입력하면 아파트 매매·전월세 실거래가를 조회합니다. 샘플 데이터로 자동 대체하지 않습니다.'}</span>
           </div>
         </aside>
 
         <section className="map-section">
           <div className="map-toolbar">
-            <div><MapPin size={18} /> {regionName}</div>
+            <div><MapPin size={18} /> {regionName} · 지도 표시 {recordsOnMap.length}건</div>
             <button className="ghost compact" onClick={exportCsv}><Download size={15} /> CSV 내보내기</button>
           </div>
           <div ref={mapRef} className="map" />
@@ -239,7 +245,8 @@ export default function App() {
       </main>
 
       <section className="results panel">
-        <div className="results-header"><h2>검색 결과</h2><span>{filteredRecords.length}건 표시</span></div>
+        <div className="results-header"><h2>검색 결과</h2><span>{filteredRecords.length}건 표시 · 지도 {recordsOnMap.length}건</span></div>
+
         <table>
           <thead><tr><th>유형</th><th>제목</th><th>주소</th><th>가격</th><th>면적</th><th>태그</th></tr></thead>
           <tbody>{filteredRecords.map((record) => <tr key={record.id} onClick={() => setSelected(record)} className={selected?.id === record.id ? 'selected' : ''}><td>{dealLabels[record.dealType]}</td><td>{record.title}</td><td>{record.address}</td><td>{record.priceLabel}</td><td>{record.area}㎡</td><td>{record.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</td></tr>)}</tbody>
@@ -247,7 +254,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <span>데이터 출처: 국토교통부 실거래가, 소상공인시장진흥공단 상가정보, 한국자산관리공사 온비드. 민간 매물 크롤링은 기본 기능에 포함하지 않습니다.</span>
+        <span>데이터 출처: 국토교통부 아파트 매매·전월세 실거래가, 행정표준코드관리시스템 법정동코드. 좌표가 검증되지 않은 거래는 지도에 표시하지 않고 목록과 CSV에만 제공합니다.</span>
         <div>{response?.references.map((ref) => <button key={ref.url} onClick={() => window.desktopApi.openExternal(ref.url)}>{ref.title}</button>)}</div>
       </footer>
     </div>
