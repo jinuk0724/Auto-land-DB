@@ -14,25 +14,9 @@ import {
 } from 'chart.js';
 import { Building2, Download, ExternalLink, KeyRound, MapPin, Search, Store, TrendingUp, UsersRound } from 'lucide-react';
 import type { DealType, PropertyRecord, SearchRequest, SearchResponse } from './global';
+import { regions } from './data/regions';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Tooltip, Legend);
-
-const regions = [
-  { code: '11680', name: '서울특별시 강남구' },
-  { code: '11110', name: '서울특별시 종로구' },
-  { code: '26440', name: '부산광역시 강서구' },
-  { code: '27140', name: '대구광역시 동구' },
-  { code: '28185', name: '인천광역시 연수구' },
-  { code: '29155', name: '광주광역시 남구' },
-  { code: '30170', name: '대전광역시 서구' },
-  { code: '41135', name: '경기도 성남시 분당구' },
-  { code: '41465', name: '경기도 용인시 수지구' },
-  { code: '43113', name: '충청북도 청주시 흥덕구' },
-  { code: '44133', name: '충청남도 천안시 서북구' },
-  { code: '47113', name: '경상북도 포항시 북구' },
-  { code: '48125', name: '경상남도 창원시 마산합포구' },
-  { code: '50110', name: '제주특별자치도 제주시' },
-];
 
 const dealLabels: Record<DealType, string> = {
   rent: '전세·월세',
@@ -67,8 +51,9 @@ function maskApiKey(value?: string | null) {
 
 export default function App() {
   const [apiKey, setApiKey] = useState(getInitialApiKey);
-  const [dealType, setDealType] = useState<DealType>('commercial');
+  const [dealType, setDealType] = useState<DealType>('rent');
   const [regionCode, setRegionCode] = useState('11680');
+  const [regionFilter, setRegionFilter] = useState('');
   const [contractMonth, setContractMonth] = useState(defaultMonth);
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -79,6 +64,13 @@ export default function App() {
   const layerRef = useRef<L.LayerGroup | null>(null);
 
   const regionName = useMemo(() => regions.find((region) => region.code === regionCode)?.name ?? '서울특별시 강남구', [regionCode]);
+  const visibleRegions = useMemo(() => {
+    const query = regionFilter.trim().toLowerCase();
+    if (!query) return regions;
+    const current = regions.find((region) => region.code === regionCode);
+    const filtered = regions.filter((region) => `${region.name} ${region.code}`.toLowerCase().includes(query));
+    return current && !filtered.some((region) => region.code === current.code) ? [current, ...filtered] : filtered;
+  }, [regionFilter, regionCode]);
   const normalizedApiKey = normalizeApiKey(apiKey);
   const apiKeyReady = hasUsableApiKey(normalizedApiKey);
   const hasBundledApiKey = hasUsableApiKey(bundledApiKey);
@@ -236,7 +228,9 @@ export default function App() {
             {(Object.keys(dealLabels) as DealType[]).map((type) => <button key={type} className={dealType === type ? 'active' : ''} onClick={() => setDealType(type)}>{dealLabels[type]}</button>)}
           </div>
           <label>지역</label>
-          <select value={regionCode} onChange={(event) => setRegionCode(event.target.value)}>{regions.map((region) => <option key={region.code} value={region.code}>{region.name}</option>)}</select>
+          <input value={regionFilter} onChange={(event) => setRegionFilter(event.target.value)} placeholder="시·군·구명 또는 법정동 코드 검색" />
+          <select value={regionCode} onChange={(event) => setRegionCode(event.target.value)}>{visibleRegions.map((region) => <option key={region.code} value={region.code}>{region.name} ({region.code})</option>)}</select>
+          <small className="field-help">전국 {regions.length.toLocaleString()}개 시·군·구 법정동 코드 기준으로 조회합니다.</small>
           <label>계약·입찰 기준월</label>
           <input value={contractMonth} onChange={(event) => setContractMonth(event.target.value)} type="month" />
           <label>결과 내 키워드 필터</label>
@@ -244,8 +238,8 @@ export default function App() {
           <button className="primary" onClick={runSearch} disabled={loading}>{loading ? '조회 중...' : '검색 및 분석 실행'}</button>
 
           <div className="notice">
-            <strong>{response?.mode === 'api' ? '실제 API 모드' : '샘플 데이터 모드'}</strong>
-            <span>{response?.message ?? '앱을 시작하면 샘플 데이터가 자동 표시됩니다.'}</span>
+            <strong>{response?.mode === 'api' ? '실제 API 모드' : response?.mode === 'error' ? 'API 오류' : '샘플 데이터 모드'}</strong>
+            <span>{response?.message ?? '앱을 시작하면 실제 API 조회 가능 항목을 우선 표시합니다.'}</span>
           </div>
         </aside>
 

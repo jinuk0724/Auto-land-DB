@@ -40,7 +40,7 @@ export type CommerceRecord = {
 export type SearchResponse = {
   ok: boolean;
   message: string;
-  mode: 'api' | 'sample';
+  mode: 'api' | 'sample' | 'error';
   records: PropertyRecord[];
   commerce: CommerceRecord[];
   population: {
@@ -74,7 +74,12 @@ export async function fetchRealEstateData(request: SearchRequest): Promise<Searc
       return withCommerceAndPopulation(normalizedRequest, records, 'api', '국토교통부 아파트 전월세 API 조회 결과입니다.');
     }
 
-    if (request.dealType === 'commercial' || request.dealType === 'sale') {
+    if (request.dealType === 'sale') {
+      const records = await fetchApartmentTrade(normalizedRequest);
+      return withCommerceAndPopulation(normalizedRequest, records, 'api', '국토교통부 아파트 매매 실거래가 API 조회 결과입니다.');
+    }
+
+    if (request.dealType === 'commercial') {
       const records = await fetchCommercialSale(normalizedRequest);
       return withCommerceAndPopulation(normalizedRequest, records, 'api', '국토교통부 상업업무용 매매 API 조회 결과입니다.');
     }
@@ -84,10 +89,10 @@ export async function fetchRealEstateData(request: SearchRequest): Promise<Searc
       return withCommerceAndPopulation(normalizedRequest, records, 'api', '온비드 부동산 공매 API 조회 결과입니다. 법원경매는 공식 API 확인이 어려워 바로가기로 제공합니다.');
     }
 
-    return sampleResponse(normalizedRequest, '지원하지 않는 유형이므로 샘플 데이터로 표시합니다.');
+    return errorResponse(normalizedRequest, '지원하지 않는 거래 유형입니다.');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return sampleResponse(normalizedRequest, `서비스키는 입력되었지만 API 조회에 실패해 샘플 데이터로 전환했습니다: ${message}`);
+    return errorResponse(normalizedRequest, `API 조회에 실패했습니다. 샘플 데이터로 자동 전환하지 않습니다. ${message}`);
   }
 }
 
@@ -116,6 +121,34 @@ async function fetchApartmentRent(request: SearchRequest): Promise<PropertyRecor
     lat: jitterLat(request.regionCode, index),
     lng: jitterLng(request.regionCode, index),
     tags: ['전월세', '공공데이터', '실거래'],
+  }));
+}
+
+async function fetchApartmentTrade(request: SearchRequest): Promise<PropertyRecord[]> {
+  const url = new URL('https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade');
+  url.searchParams.set('serviceKey', request.apiKey ?? '');
+  url.searchParams.set('LAWD_CD', request.regionCode);
+  url.searchParams.set('DEAL_YMD', request.contractMonth.replace('-', ''));
+  url.searchParams.set('numOfRows', '100');
+  url.searchParams.set('pageNo', '1');
+
+  const xml = await fetchText(url);
+  const items = parseItems(xml);
+  return items.slice(0, 50).map((item, index) => ({
+    id: `sale-${index}-${item['aptNm'] ?? item['단지명'] ?? index}`,
+    source: '국토교통부 아파트 매매',
+    dealType: 'sale',
+    title: item['aptNm'] ?? item['단지명'] ?? '아파트 매매',
+    address: `${request.regionName} ${item['umdNm'] ?? item['법정동'] ?? ''}`.trim(),
+    category: '주거용 아파트',
+    priceLabel: `거래금액 ${formatMoney(Number(cleanNumber(item['dealAmount'] ?? item['거래금액'] ?? 0)))}`,
+    price: Number(cleanNumber(item['dealAmount'] ?? item['거래금액'] ?? 0)),
+    area: Number(cleanNumber(item['excluUseAr'] ?? item['전용면적'] ?? 0)),
+    floor: item['floor'] ?? item['층'],
+    contractDate: `${item['dealYear'] ?? ''}.${item['dealMonth'] ?? ''}.${item['dealDay'] ?? ''}`,
+    lat: jitterLat(request.regionCode, index),
+    lng: jitterLng(request.regionCode, index),
+    tags: ['매매', '공공데이터', '실거래'],
   }));
 }
 
@@ -206,8 +239,13 @@ function extractApiError(text: string) {
   if (!text) return '';
   const code = matchTag(text, 'resultCode') || matchTag(text, 'returnAuthMsg') || matchTag(text, 'returnReasonCode');
   const message = matchTag(text, 'resultMsg') || matchTag(text, 'returnReasonCode') || matchTag(text, 'errMsg');
-  if (!code && !message) return '';
-  if (code === '00' || code === 'NORMAL_SERVICE') return '';
+  if (!code && !message) {
+    const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/forbidden/i.test(plain)) return 'HTTP Forbidden: 해당 서비스가 현재 서비스키에 승인되지 않았거나 호출 권한이 없습니다.';
+    if (/unexpected errors/i.test(plain)) return '공공데이터 서버가 Unexpected errors 응답을 반환했습니다.';
+    return '';
+  }
+  if (code === '00' || code === '000' || code === 'NORMAL_SERVICE') return '';
   return [code, message].filter(Boolean).join(' / ');
 }
 
@@ -243,12 +281,34 @@ function formatMoney(value: number) {
 }
 
 function withCommerceAndPopulation(request: SearchRequest, records: PropertyRecord[], mode: 'api' | 'sample', message: string): SearchResponse {
-  if (records.length === 0) return sampleResponse(request, 'API에서 결과가 없어 샘플 데이터로 표시합니다. 검색 조건 또는 API 키를 확인하세요.');
+  if (records.length === 0) {
+    return {
+      ok: true,
+      message: 'API는 정상 호출되었지만 해당 지역·월 조건의 실거래 결과가 없습니다. 샘플 데이터로 전환하지 않았습니다.',
+      mode,
+      records: [],
+      commerce: sampleCommerce(request),
+      population: samplePopulation(request),
+      references: refs,
+    };
+  }
   return {
     ok: true,
     message,
     mode,
     records,
+    commerce: sampleCommerce(request),
+    population: samplePopulation(request),
+    references: refs,
+  };
+}
+
+function errorResponse(request: SearchRequest, message: string): SearchResponse {
+  return {
+    ok: false,
+    message,
+    mode: 'error',
+    records: [],
     commerce: sampleCommerce(request),
     population: samplePopulation(request),
     references: refs,
