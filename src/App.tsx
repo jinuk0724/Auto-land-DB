@@ -15,6 +15,7 @@ import {
 import { Building2, Download, ExternalLink, KeyRound, MapPin, Search, Store, TrendingUp, UsersRound } from 'lucide-react';
 import type { DealType, PropertyRecord, SearchRequest, SearchResponse } from './global';
 import { allDistricts, provinces } from './data/regions';
+import { busanCommercialSummary, busanJinFloatingPopulation, type BusanCommercialArea } from './data/busanCommercial';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Tooltip, Legend);
 
@@ -27,9 +28,18 @@ const dealLabels: Record<DealType, string> = {
 
 const defaultMonth = new Date().toISOString().slice(0, 7);
 const bundledApiKey = import.meta.env.VITE_PUBLIC_DATA_SERVICE_KEY ?? '';
-const defaultProvinceCode = '11';
-const defaultRegionCode = '11680';
+const defaultProvinceCode = '26';
+const defaultRegionCode = '26230';
 const supportedDealTypes: DealType[] = ['rent', 'sale'];
+
+type BusanCommerceMarker = {
+  id: string;
+  name: string;
+  industry: string;
+  address: string;
+  lat: number;
+  lng: number;
+};
 
 export default function App() {
   const [apiKey, setApiKey] = useState(localStorage.getItem('publicDataApiKey') ?? bundledApiKey);
@@ -46,7 +56,7 @@ export default function App() {
   const layerRef = useRef<L.LayerGroup | null>(null);
 
   const districtOptions = useMemo(() => provinces.find((province) => province.code === provinceCode)?.districts ?? provinces[0]?.districts ?? [], [provinceCode]);
-  const regionName = useMemo(() => allDistricts.find((region) => region.code === regionCode)?.fullName ?? '서울특별시 강남구', [regionCode]);
+  const regionName = useMemo(() => allDistricts.find((region) => region.code === regionCode)?.fullName ?? '부산광역시 부산진구', [regionCode]);
 
   const filteredRecords = useMemo(() => {
     const records = response?.records ?? [];
@@ -57,16 +67,42 @@ export default function App() {
 
   const recordsOnMap = useMemo(() => filteredRecords.filter((record) => typeof record.lat === 'number' && typeof record.lng === 'number'), [filteredRecords]);
 
+  const selectedBusanArea = useMemo<BusanCommercialArea | null>(() => {
+    if (provinceCode !== '26') return null;
+    return busanCommercialSummary.districts.find((district) => regionName.includes(district.name)) ?? busanCommercialSummary.overall;
+  }, [provinceCode, regionName]);
+
+  const busanCommerceMarkers = useMemo<BusanCommerceMarker[]>(() => {
+    if (!selectedBusanArea) return [];
+    return selectedBusanArea.sampleStores
+      .filter((store) => typeof store.lat === 'number' && typeof store.lng === 'number')
+      .slice(0, 12)
+      .map((store, index) => ({
+        id: `${selectedBusanArea.name}-${store.name}-${index}`,
+        name: store.name,
+        industry: store.category || store.majorCategory,
+        address: store.address,
+        lat: store.lat as number,
+        lng: store.lng as number,
+      }));
+  }, [selectedBusanArea]);
+
+  const busanFloatingPoints = useMemo(() => (regionName.includes('부산진구') ? busanJinFloatingPopulation.points : []), [regionName]);
+
   const summary = useMemo(() => {
     const records = filteredRecords;
     const total = records.reduce((acc, item) => acc + item.price, 0);
     const avgPrice = records.length ? Math.round(total / records.length) : 0;
     const avgArea = records.length ? Math.round(records.reduce((acc, item) => acc + item.area, 0) / records.length) : 0;
-    const commerceCount = response?.commerce.length ?? 0;
-    const floatingIndex = response?.population.floatingIndex ?? 0;
-    const riskScore = Math.max(18, Math.min(86, 100 - Math.round((floatingIndex + commerceCount * 4) / 2)));
+    const commerceCount = selectedBusanArea?.activeStores ?? response?.commerce.length ?? 0;
+    const floatingIndex = busanFloatingPoints.length
+      ? Math.min(100, Math.round((busanJinFloatingPopulation.totalPopulation / Math.max(1, busanJinFloatingPopulation.gridCount)) * 8))
+      : selectedBusanArea
+        ? Math.min(100, Math.round(selectedBusanArea.activeRate))
+        : response?.population.floatingIndex ?? 0;
+    const riskScore = Math.max(18, Math.min(86, 100 - Math.round((floatingIndex + Math.min(commerceCount, 1000) / 12) / 2)));
     return { count: records.length, avgPrice, avgArea, commerceCount, floatingIndex, riskScore };
-  }, [filteredRecords, response]);
+  }, [busanFloatingPoints.length, filteredRecords, response, selectedBusanArea]);
 
   useEffect(() => {
     void runSearch();
@@ -104,7 +140,8 @@ export default function App() {
       bounds.push([record.lat, record.lng]);
     });
 
-    response.commerce.forEach((shop) => {
+    const commerceMarkers = response.commerce.length ? response.commerce : busanCommerceMarkers;
+    commerceMarkers.forEach((shop) => {
       if (typeof shop.lat !== 'number' || typeof shop.lng !== 'number') return;
       L.circleMarker([shop.lat, shop.lng], {
         radius: 5,
@@ -116,8 +153,19 @@ export default function App() {
       bounds.push([shop.lat, shop.lng]);
     });
 
+    busanFloatingPoints.forEach((point) => {
+      L.circleMarker([point.centerLat, point.centerLng], {
+        radius: Math.max(4, Math.min(14, point.count / 3)),
+        fillColor: '#f97316',
+        color: '#fed7aa',
+        weight: 1,
+        fillOpacity: 0.58,
+      }).bindPopup(`<strong>부산진구 유동인구 격자 ${point.id}</strong><br/>1분 유동인구 ${point.count.toLocaleString()}명`).addTo(layer);
+      bounds.push([point.centerLat, point.centerLng]);
+    });
+
     if (bounds.length) map.fitBounds(bounds, { padding: [36, 36], maxZoom: 14 });
-  }, [recordsOnMap, response]);
+  }, [busanCommerceMarkers, busanFloatingPoints, recordsOnMap, response]);
 
   async function runSearch() {
     setLoading(true);
@@ -148,22 +196,35 @@ export default function App() {
 
   const commerceChart = useMemo(() => {
     const counts = new Map<string, number>();
-    response?.commerce.forEach((item) => counts.set(item.industry, (counts.get(item.industry) ?? 0) + 1));
+    if (selectedBusanArea) {
+      selectedBusanArea.topMajorCategories.forEach((item) => counts.set(item.name, item.count));
+    } else {
+      response?.commerce.forEach((item) => counts.set(item.industry, (counts.get(item.industry) ?? 0) + 1));
+    }
     return {
       labels: [...counts.keys()],
       datasets: [{ data: [...counts.values()], backgroundColor: ['#22c55e', '#06b6d4', '#8b5cf6', '#f97316', '#eab308', '#ec4899', '#14b8a6', '#64748b', '#ef4444'] }],
     };
-  }, [response]);
+  }, [response, selectedBusanArea]);
 
   const priceChart = useMemo(() => ({
     labels: filteredRecords.map((record) => record.title.slice(0, 10)),
     datasets: [{ label: '가격 지표(만원)', data: filteredRecords.map((record) => record.price), backgroundColor: '#38bdf8', borderColor: '#0ea5e9' }],
   }), [filteredRecords]);
 
-  const populationChart = useMemo(() => ({
-    labels: ['평일', '주말', '20~39세', '40~59세'],
-    datasets: [{ label: '유동인구·연령 지표', data: [response?.population.weekday ?? 0, response?.population.weekend ?? 0, (response?.population.age20to39 ?? 0) * 180, (response?.population.age40to59 ?? 0) * 180], borderColor: '#a78bfa', backgroundColor: 'rgba(167, 139, 250, 0.18)', tension: 0.35, fill: true }],
-  }), [response]);
+  const populationChart = useMemo(() => {
+    if (busanFloatingPoints.length) {
+      const topPoints = [...busanFloatingPoints].sort((a, b) => b.count - a.count).slice(0, 8);
+      return {
+        labels: topPoints.map((point) => `격자 ${point.id}`),
+        datasets: [{ label: '1분 유동인구(명)', data: topPoints.map((point) => point.count), borderColor: '#f97316', backgroundColor: 'rgba(249, 115, 22, 0.18)', tension: 0.35, fill: true }],
+      };
+    }
+    return {
+      labels: ['평일', '주말', '20~39세', '40~59세'],
+      datasets: [{ label: '유동인구·연령 지표', data: [response?.population.weekday ?? 0, response?.population.weekend ?? 0, (response?.population.age20to39 ?? 0) * 180, (response?.population.age40to59 ?? 0) * 180], borderColor: '#a78bfa', backgroundColor: 'rgba(167, 139, 250, 0.18)', tension: 0.35, fill: true }],
+    };
+  }, [busanFloatingPoints, response]);
 
   return (
     <div className="app-shell">
@@ -216,7 +277,7 @@ export default function App() {
 
         <section className="map-section">
           <div className="map-toolbar">
-            <div><MapPin size={18} /> {regionName} · 지도 표시 {recordsOnMap.length}건</div>
+            <div><MapPin size={18} /> {regionName} · 지도 표시 {recordsOnMap.length + busanCommerceMarkers.length + busanFloatingPoints.length}건</div>
             <button className="ghost compact" onClick={exportCsv}><Download size={15} /> CSV 내보내기</button>
           </div>
           <div ref={mapRef} className="map" />
@@ -228,24 +289,52 @@ export default function App() {
           <div className="metric-grid">
             <Metric icon={<Building2 />} label="검색 물건" value={`${summary.count}건`} />
             <Metric icon={<TrendingUp />} label="평균 가격" value={`${summary.avgPrice.toLocaleString()}만원`} />
-            <Metric icon={<Store />} label="주변 상가" value={`${summary.commerceCount}개`} />
+            <Metric icon={<Store />} label="주변 상가" value={`${summary.commerceCount.toLocaleString()}개`} />
             <Metric icon={<UsersRound />} label="유동지수" value={`${summary.floatingIndex}/100`} />
           </div>
 
           <div className="score-card">
             <span>상권 매력도</span>
-            <strong>{Math.min(96, summary.floatingIndex + summary.commerceCount * 3)}</strong>
-            <small>유동인구, 주변 상가 밀도, 거래 결과 수를 합산한 내부 지표입니다.</small>
+            <strong>{Math.min(96, summary.floatingIndex + Math.round(Math.min(summary.commerceCount, 5000) / 120))}</strong>
+            <small>{selectedBusanArea ? '부산 상권 점포이력 집계와 부산진구 격자 유동인구 표본을 함께 반영한 내부 지표입니다.' : '유동인구, 주변 상가 밀도, 거래 결과 수를 합산한 내부 지표입니다.'}</small>
           </div>
 
+          {selectedBusanArea && (
+            <div className="busan-insight-card">
+              <h3>부산 상권 v2</h3>
+              <p><strong>{selectedBusanArea.name}</strong> 영업 점포 {selectedBusanArea.activeStores.toLocaleString()}개, 폐업 이력 {selectedBusanArea.closedStores.toLocaleString()}개를 집계했습니다. 보라색 마커는 좌표가 확인된 상가 표본, 주황색 마커는 부산진구 격자 유동인구입니다.</p>
+              <div className="mini-stats">
+                <span>영업률 <b>{selectedBusanArea.activeRate}%</b></span>
+                <span>주요 업종 <b>{selectedBusanArea.topMajorCategories[0]?.name ?? '정보 없음'}</b></span>
+              </div>
+              {busanFloatingPoints.length > 0 ? (
+                <p className="source-note">부산진구 유동인구: {busanJinFloatingPopulation.source.sampleDateTime} 기준 {busanJinFloatingPopulation.gridCount}개 격자, 총 {busanJinFloatingPopulation.totalPopulation.toLocaleString()}명 표본.</p>
+              ) : (
+                <p className="source-note">부산진구 외 구·군은 현재 점포이력 기반 상권 분석을 제공합니다. 동일 수준의 격자 유동인구 원문이 확인되면 확장 가능합니다.</p>
+              )}
+            </div>
+          )}
+
           <div className="chart-card"><h3>물건별 가격 지표</h3><Bar data={priceChart} options={{ plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#94a3b8' } }, y: { ticks: { color: '#94a3b8' } } } }} /></div>
-          <div className="chart-card"><h3>업종 분포</h3><Doughnut data={commerceChart} options={{ plugins: { legend: { position: 'bottom', labels: { color: '#cbd5e1' } } } }} /></div>
-          <div className="chart-card"><h3>유동인구 추정</h3><Line data={populationChart} options={{ plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#94a3b8' } }, y: { ticks: { color: '#94a3b8' } } } }} /></div>
+          <div className="chart-card"><h3>{selectedBusanArea ? '부산 업종 분포' : '업종 분포'}</h3><Doughnut data={commerceChart} options={{ plugins: { legend: { position: 'bottom', labels: { color: '#cbd5e1' } } } }} /></div>
+          <div className="chart-card"><h3>{busanFloatingPoints.length ? '부산진구 유동인구 격자' : '유동인구 추정'}</h3><Line data={populationChart} options={{ plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#94a3b8' } }, y: { ticks: { color: '#94a3b8' } } } }} /></div>
         </aside>
       </main>
 
+      {selectedBusanArea && (
+        <section className="results panel busan-results">
+          <div className="results-header"><h2>부산 상가·상권 분석</h2><span>{selectedBusanArea.name} · 기준 {busanCommercialSummary.source.baseDate}</span></div>
+          <div className="rank-grid">
+            <RankList title="대분류 상위 업종" items={selectedBusanArea.topMajorCategories.slice(0, 6)} />
+            <RankList title="세부 업종" items={selectedBusanArea.topBusinessTypes.slice(0, 6)} />
+            <RankList title="행정동 분포" items={selectedBusanArea.topAdministrativeDongs.slice(0, 6)} />
+          </div>
+          <p className="source-note">출처: {busanCommercialSummary.source.provider} {busanCommercialSummary.source.name}. 상점명·주소·좌표가 포함된 SHP 원문을 구·군 단위로 집계했습니다.</p>
+        </section>
+      )}
+
       <section className="results panel">
-        <div className="results-header"><h2>검색 결과</h2><span>{filteredRecords.length}건 표시 · 지도 {recordsOnMap.length}건</span></div>
+        <div className="results-header"><h2>검색 결과</h2><span>{filteredRecords.length}건 표시 · 지도 {recordsOnMap.length + busanCommerceMarkers.length + busanFloatingPoints.length}건</span></div>
 
         <table>
           <thead><tr><th>유형</th><th>제목</th><th>주소</th><th>가격</th><th>면적</th><th>태그</th></tr></thead>
@@ -254,7 +343,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <span>데이터 출처: 국토교통부 아파트 매매·전월세 실거래가, 행정표준코드관리시스템 법정동코드. 좌표가 검증되지 않은 거래는 지도에 표시하지 않고 목록과 CSV에만 제공합니다.</span>
+        <span>데이터 출처: 국토교통부 아파트 매매·전월세 실거래가, 행정표준코드관리시스템 법정동코드, 부산광역시 상권 점포이력 현황, 부산진구 S-서비스 유동인구분석. 좌표가 검증되지 않은 거래는 지도에 표시하지 않고 목록과 CSV에만 제공합니다.</span>
         <div>{response?.references.map((ref) => <button key={ref.url} onClick={() => window.desktopApi.openExternal(ref.url)}>{ref.title}</button>)}</div>
       </footer>
     </div>
@@ -263,4 +352,19 @@ export default function App() {
 
 function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return <div className="metric"><span>{icon}</span><small>{label}</small><strong>{value}</strong></div>;
+}
+
+function RankList({ title, items }: { title: string; items: Array<{ name: string; count: number; share: number }> }) {
+  return (
+    <div className="rank-list">
+      <h3>{title}</h3>
+      {items.map((item) => (
+        <div key={item.name} className="rank-row">
+          <span>{item.name}</span>
+          <strong>{item.count.toLocaleString()}건</strong>
+          <small>{item.share}%</small>
+        </div>
+      ))}
+    </div>
+  );
 }
