@@ -1,3 +1,5 @@
+import { regionCoordinates } from './regionCoordinates.js';
+
 export type DealType = 'rent' | 'sale' | 'auction' | 'commercial';
 
 export type SearchRequest = {
@@ -348,8 +350,8 @@ function sampleRecords(request: SearchRequest): PropertyRecord[] {
     area: 54 + index * 18,
     floor: `${index + 2}층`,
     contractDate: request.contractMonth,
-    lat: baseLat + (index - 1.5) * 0.006,
-    lng: baseLng + (index - 1.5) * 0.008,
+    lat: baseLat + (index - 1.5) * 0.0022,
+    lng: baseLng + (index - 1.5) * 0.0028,
     tags: request.dealType === 'auction' ? ['경매', '권리분석 필요', '현장조사'] : ['실거래', '상권연계', '지도분석'],
   }));
 }
@@ -362,8 +364,8 @@ function sampleCommerce(request: SearchRequest): CommerceRecord[] {
     name: `${industry} 샘플 ${index + 1}`,
     industry,
     address: `${request.regionName} 상권로 ${20 + index}`,
-    lat: base.lat + Math.sin(index) * 0.012,
-    lng: base.lng + Math.cos(index) * 0.012,
+    lat: base.lat + Math.sin(index) * 0.0032,
+    lng: base.lng + Math.cos(index) * 0.0032,
   }));
 }
 
@@ -379,32 +381,17 @@ function samplePopulation(request: SearchRequest) {
 }
 
 function baseCoord(regionCode: string) {
-  const region = regionCode.slice(0, 2);
-  const map: Record<string, { lat: number; lng: number }> = {
-    '11': { lat: 37.5665, lng: 126.9780 },
-    '26': { lat: 35.1796, lng: 129.0756 },
-    '27': { lat: 35.8714, lng: 128.6014 },
-    '28': { lat: 37.4563, lng: 126.7052 },
-    '29': { lat: 35.1595, lng: 126.8526 },
-    '30': { lat: 36.3504, lng: 127.3845 },
-    '31': { lat: 35.5384, lng: 129.3114 },
-    '41': { lat: 37.4138, lng: 127.5183 },
-    '43': { lat: 36.6357, lng: 127.4917 },
-    '44': { lat: 36.6588, lng: 126.6728 },
-    '46': { lat: 34.8161, lng: 126.4629 },
-    '47': { lat: 36.5760, lng: 128.5056 },
-    '48': { lat: 35.2383, lng: 128.6924 },
-    '50': { lat: 33.4996, lng: 126.5312 },
-    '51': { lat: 37.8228, lng: 128.1555 },
-    '52': { lat: 35.7175, lng: 127.1530 },
-  };
-  return map[region] ?? map['11'];
+  const exact = regionCoordinates[regionCode];
+  if (exact) return exact;
+  const samePrefix = Object.entries(regionCoordinates).find(([code]) => code.startsWith(regionCode.slice(0, 4)) || code.startsWith(regionCode.slice(0, 3)));
+  if (samePrefix) return samePrefix[1];
+  return regionCoordinates['11680'] ?? { lat: 37.496644, lng: 127.062985 };
 }
 
 function jitterLat(regionCode: string, index: number) {
-  return baseCoord(regionCode).lat + ((index % 9) - 4) * 0.004;
+  return baseCoord(regionCode).lat + ((index % 9) - 4) * 0.0022;
 }
 
 function jitterLng(regionCode: string, index: number) {
-  return baseCoord(regionCode).lng + ((index % 7) - 3) * 0.005;
+  return baseCoord(regionCode).lng + ((index % 7) - 3) * 0.0028;
 }

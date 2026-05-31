@@ -63,7 +63,8 @@ export default function App() {
   const leafletRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
 
-  const regionName = useMemo(() => regions.find((region) => region.code === regionCode)?.name ?? '서울특별시 강남구', [regionCode]);
+  const selectedRegion = useMemo(() => regions.find((region) => region.code === regionCode) ?? regions.find((region) => region.code === '11680') ?? regions[0], [regionCode]);
+  const regionName = selectedRegion?.name ?? '서울특별시 강남구';
   const visibleRegions = useMemo(() => {
     const query = regionFilter.trim().toLowerCase();
     if (!query) return regions;
@@ -106,14 +107,22 @@ export default function App() {
 
   useEffect(() => {
     if (!mapRef.current || leafletRef.current) return;
-    leafletRef.current = L.map(mapRef.current, { zoomControl: false }).setView([37.5665, 126.978], 12);
+    leafletRef.current = L.map(mapRef.current, { zoomControl: false }).setView([selectedRegion.lat, selectedRegion.lng], 13);
     L.control.zoom({ position: 'bottomright' }).addTo(leafletRef.current);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
     }).addTo(leafletRef.current);
     layerRef.current = L.layerGroup().addTo(leafletRef.current);
-  }, []);
+  }, [selectedRegion]);
+
+  useEffect(() => {
+    const map = leafletRef.current;
+    if (!map || !selectedRegion) return;
+    if (!response || response.records.length === 0) {
+      map.setView([selectedRegion.lat, selectedRegion.lng], 13);
+    }
+  }, [selectedRegion, response]);
 
   useEffect(() => {
     const map = leafletRef.current;
@@ -146,8 +155,12 @@ export default function App() {
       bounds.push([shop.lat, shop.lng]);
     });
 
-    if (bounds.length) map.fitBounds(bounds, { padding: [36, 36], maxZoom: 14 });
-  }, [filteredRecords, response]);
+    if (bounds.length) {
+      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 14 });
+    } else {
+      map.setView([selectedRegion.lat, selectedRegion.lng], 13);
+    }
+  }, [filteredRecords, response, selectedRegion]);
 
   async function runSearch() {
     setLoading(true);
