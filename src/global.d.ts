@@ -51,7 +51,7 @@ export type CommerceRecord = {
 export type SearchResponse = {
   ok: boolean;
   message: string;
-  mode: 'api' | 'sample' | 'error';
+  mode: 'api' | 'sample';
   records: PropertyRecord[];
   commerce: CommerceRecord[];
   population: {
